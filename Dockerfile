@@ -1,33 +1,29 @@
-# Use a pre-built PyTorch image. This image is based on Ubuntu and has PyTorch and Python installed.
-# Using a specific version ensures stability.
-FROM pytorch/pytorch:2.0.1-cuda11.7-cudnn8-runtime
+# 1. START: Use the latest stable slim image (Bookworm) to avoid repository errors.
+FROM python:3.10-slim-bookworm
 
-# Set environment variables
-ENV PYTHONUNBUFFERED 1
-ENV APP_HOME /app
-WORKDIR $APP_HOME
+# 2. Set the working directory
+WORKDIR /app
 
-# Install necessary system dependencies
-# 1. git and git-lfs for model fetching
-# 2. libgl1, libsm6, libxext6: CRITICAL for resolving "libGL.so.1" errors when using OpenCV in a headless environment.
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    git \
-    git-lfs \
+# 3. FIX: Install ALL missing system libraries required by OpenCV/ultralytics
+# CRITICAL FIX for libGL.so.1 errors (OpenCV dependency failure)
+# Installing libgl1, libsm6, and libxext6 ensures all graphics dependencies are met.
+RUN apt-get update && apt-get install -y \
     libgl1 \
+    libglib2.0-0 \
     libsm6 \
     libxext6 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the requirements file and install only the application packages
+# 4. Copy requirements file and install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application files
-COPY . .
+# 5. Copy the model and app code
+COPY best.pt .
+COPY streamlit_app.py .
 
-# Initialize Git LFS inside the container to ensure the model is downloaded/available
-RUN git lfs pull
+# 6. Expose the port
+EXPOSE 8501 
 
-# Define the command to run the Streamlit app
-CMD ["streamlit", "run", "streamlit_app.py", "--server.port=8501", "--server.enableCORS=false", "--server.enableXsrfProtection=false"]
+# 7. The command that starts the Streamlit web server
+CMD ["streamlit", "run", "streamlit_app.py", "--server.port", "8501", "--server.address", "0.0.0.0"]
