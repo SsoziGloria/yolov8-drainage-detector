@@ -1,0 +1,7 @@
+streamlit
+ultralytics
+Pillow
+numpy
+opencv-python-headless # Essential for server environments
+torch==2.0.1
+torchvision==0.15.2
