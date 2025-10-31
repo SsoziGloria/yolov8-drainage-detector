@@ -1,32 +1,32 @@
-# Use the official Python image as the base
-FROM python:3.10-slim
+# Use a pre-built PyTorch image. This image is based on Ubuntu and has PyTorch and Python installed.
+# Using a specific version ensures stability.
+FROM pytorch/pytorch:2.0.1-cuda11.7-cudnn8-runtime
 
 # Set environment variables
 ENV PYTHONUNBUFFERED 1
 ENV APP_HOME /app
 WORKDIR $APP_HOME
 
-# Install system dependencies needed for computer vision (like OpenCV dependencies)
-# Install git and git-lfs for fetching the model
+# Install necessary system dependencies
+# 1. git and git-lfs for model fetching
+# 2. libgl1, libsm6, libxext6: CRITICAL for resolving "libGL.so.1" errors when using OpenCV in a headless environment.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    libgl1-mesa-glx \
-    libsm6 \
-    libxrender1 \
-    libfontconfig1 \
     git \
     git-lfs \
+    libgl1 \
+    libsm6 \
+    libxext6 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the requirements file and install Python packages
+# Copy the requirements file and install only the application packages
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application files (including streamlit_app.py and best.pt)
+# Copy the rest of the application files
 COPY . .
 
 # Initialize Git LFS inside the container to ensure the model is downloaded/available
-# This is a critical step for deployment
 RUN git lfs pull
 
 # Define the command to run the Streamlit app
