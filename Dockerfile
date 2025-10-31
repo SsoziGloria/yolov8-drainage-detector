@@ -23,10 +23,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of the application files (including streamlit_app.py and best.pt)
-# The model (best.pt) will be fetched by Git LFS automatically if pushed correctly.
 COPY . .
 
 # Initialize Git LFS inside the container to ensure the model is downloaded/available
+# This is a critical step for deployment
 RUN git lfs pull
 
 # Define the command to run the Streamlit app
