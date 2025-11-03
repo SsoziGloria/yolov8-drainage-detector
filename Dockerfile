@@ -6,10 +6,12 @@ WORKDIR /app
 
 # 3. CRITICAL FIX: Install ALL missing system libraries required by OpenCV/ultralytics
 # This comprehensive list ensures all run-time dependencies for graphics,
-# image, and video handling (often needed indirectly by cv2) are met,
-# permanently fixing the "libGL.so.1" error.
+# image, and video handling are met.
+# FIX: Using 'libgl1-mesa-glx' is the most robust fix for the "libGL.so.1" error.
+# ADDED: 'unzip' is added as a safety measure for ultralytics internal operations.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1 \
+    unzip \
+    libgl1-mesa-glx \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
