@@ -4,10 +4,10 @@ FROM python:3.10-slim-bookworm
 # 2. Set the working directory
 WORKDIR /app
 
-# 3. FIX: Install ALL missing system libraries required by OpenCV/ultralytics
-# CRITICAL FIX for libGL.so.1 errors (OpenCV dependency failure)
-# Installing libgl1, libsm6, and libxext6 ensures all graphics dependencies are met.
-RUN apt-get update && apt-get install -y \
+# 3. CRITICAL FIX: Install ALL missing system libraries required by OpenCV/ultralytics
+# This explicitly addresses the "libGL.so.1" error and ensures all graphics 
+# dependencies needed for cv2 (which is imported by YOLO/ultralytics) are met.
+RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     libglib2.0-0 \
     libsm6 \
