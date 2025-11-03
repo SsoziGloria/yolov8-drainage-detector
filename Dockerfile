@@ -5,13 +5,17 @@ FROM python:3.10-slim-bookworm
 WORKDIR /app
 
 # 3. CRITICAL FIX: Install ALL missing system libraries required by OpenCV/ultralytics
-# This explicitly addresses the "libGL.so.1" error and ensures all graphics 
-# dependencies needed for cv2 (which is imported by YOLO/ultralytics) are met.
+# This comprehensive list ensures all run-time dependencies for graphics,
+# image, and video handling (often needed indirectly by cv2) are met,
+# permanently fixing the "libGL.so.1" error.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
+    libfontconfig1 \
+    libice6 \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # 4. Copy requirements file and install dependencies
