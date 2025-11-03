@@ -2,15 +2,20 @@ import streamlit as st
 import numpy as np
 import os
 import torch
+
+# --- Stability Configuration (Critical for Server) ---
+# MUST be placed immediately after the torch import to prevent the 
+# "cannot set number of interop threads" error. The failure occurs 
+# because Streamlit's runtime (or other imports) triggers parallel 
+# work before these lines can execute.
+torch.set_num_threads(1)
+torch.set_num_interop_threads(1)
+
 import cv2
 from ultralytics import YOLO
 from PIL import Image
 
-# --- Stability Configuration (Critical for Server) ---
-# Aggressively limit multi-threading to prevent memory deadlocks and silent crashes
-torch.set_num_threads(1)
-torch.set_num_interop_threads(1)
-cv2.setNumThreads(0)
+cv2.setNumThreads(0) # Placing this here is safer, though it can remain with the torch settings.
 
 # --- Configuration ---
 MODEL_PATH = "best.pt"  # Reverting to your trained model
@@ -39,107 +44,193 @@ def load_yolo_model():
 
 # --- Main App Logic ---
 
+# We define a function to encapsulate the heavy synchronous process
 def process_image(model, uploaded_file):
     """Handles image loading, resizing, inference, and result display."""
     
     # Create the output directory for saving results
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     
-    # 1. Load and prepare image
-    input_image_pil = Image.open(uploaded_file)
-    # Crucial step: Convert to 3-channel RGB to prevent shape mismatch errors
-    input_image_pil = input_image_pil.convert("RGB")
+    # Use a unique name for the saved image to prevent browser caching issues
+    unique_id = os.urandom(8).hex()
+    input_path = os.path.join(OUTPUT_DIR, f"input_{unique_id}.jpg")
+    save_path = os.path.join(OUTPUT_DIR, f"output_{unique_id}.jpg")
     
-    # Resize image if it's too large (prevents memory errors)
-    width, height = input_image_pil.size
-    if max(width, height) > MAX_IMAGE_SIZE:
-        ratio = MAX_IMAGE_SIZE / max(width, height)
-        input_image_pil = input_image_pil.resize((int(width * ratio), int(height * ratio)))
-        st.toast(f"Image resized to {input_image_pil.size[0]}x{input_image_pil.size[1]} for stability.", icon='📏')
+    # Read the file bytes
+    image_bytes = uploaded_file.read()
 
-    # Convert to NumPy array for robust YOLO processing
-    input_image_np = np.array(input_image_pil)
+    # Convert bytes to a numpy array for OpenCV
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+    # 1. Image Resizing (for stability on slow CPUs)
+    # Check if the image needs resizing
+    h, w = image.shape[:2]
+    long_side = max(h, w)
     
-    # 2. Run Inference
-    # The predict method is safer than the call method in deployed environments
-    results = model.predict(source=input_image_np, save=False, conf=0.25, iou=0.7)
+    if long_side > MAX_IMAGE_SIZE:
+        ratio = MAX_IMAGE_SIZE / long_side
+        new_w = int(w * ratio)
+        new_h = int(h * ratio)
+        image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+    # Save the processed image for YOLO input
+    cv2.imwrite(input_path, image)
     
-    # 3. Check for Detections
-    # results[0].boxes.data.shape[0] gives the count of detected bounding boxes
-    detections_found = results[0].boxes.data.shape[0] > 0
+    # 2. Run Inference (The CPU intensive part)
+    # The image is already saved, so we can pass the path directly to YOLO
+    # Using save=True will save the annotated image directly to runs/detect/predictX/
+    # We set conf=0.25 for a general balance, but this can be adjusted.
     
-    # 4. Save results to disk (guaranteed plotting stability)
-    save_path = os.path.join(OUTPUT_DIR, f"result_{os.path.basename(uploaded_file.name)}")
-    results[0].save(filename=save_path) # Saves the annotated image to disk
-    
-    return detections_found, save_path, results[0].boxes.data.shape[0]
-
-# --- Streamlit UI Layout ---
-
-st.set_page_config(layout="wide", page_title="YOLOv8 Drainage Detector 🚧")
-
-st.title("YOLOv8 Drainage Detector 🌊")
-
-# --- About Section ---
-with st.expander("ℹ️ About the Detector", expanded=False):
-    st.markdown("""
-    This application uses a custom-trained **YOLOv8** model to analyze drainage channel images for defects, 
-    blockages, and integrity issues. This AI system provides crucial, measurable data for commercial and municipal inspection teams.
-    """)
-
-# --- Main Content Columns ---
-col1, col2 = st.columns([1, 1])
-
-with col1:
-    st.subheader("1. Upload Image 🖼️")
-    uploaded_file = st.file_uploader(
-        "Choose an image of a drainage channel or pipe:", 
-        type=['jpg', 'jpeg', 'png']
+    # Run the prediction
+    results = model.predict(
+        source=input_path, 
+        conf=0.25, 
+        iou=0.7, 
+        save=True,
+        project=OUTPUT_DIR,
+        name=unique_id,
+        exist_ok=True, # Allow the directory to exist
+        verbose=False # Keep the console clean
     )
+    
+    # 3. Process and Return Results
+    
+    # The results are saved in a sub-folder created by YOLO. We need to find the correct path.
+    # YOLO typically saves to runs/detect/unique_id/
+    yolo_output_dir = os.path.join(OUTPUT_DIR, unique_id)
+    yolo_output_file = os.path.join(yolo_output_dir, os.path.basename(input_path))
+    
+    # YOLO saves the annotated image to a specific path; we need to rename it for simplicity
+    final_annotated_path = os.path.join(OUTPUT_DIR, f"annotated_{unique_id}.jpg")
+    
+    # The annotated file is usually named the same as the input file by YOLO, but placed 
+    # inside its run directory. We move it to the expected save_path.
+    try:
+        os.rename(yolo_output_file, final_annotated_path)
+    except FileNotFoundError:
+        # Handle case where YOLO might save under a different name or structure
+        # Fallback: check other files in the output directory
+        for f in os.listdir(yolo_output_dir):
+            if f.endswith('.jpg') or f.endswith('.png'):
+                os.rename(os.path.join(yolo_output_dir, f), final_annotated_path)
+                break
+        
+    # Get the number of detections
+    detection_count = 0
+    if results and len(results) > 0 and results[0].boxes:
+        detection_count = len(results[0].boxes)
+        
+    return final_annotated_path, detection_count
 
-with col2:
-    st.subheader("2. Run Detection")
-    # Placeholders for dynamic content
-    results_placeholder = st.empty()
-    run_button_placeholder = st.empty()
+# --- Streamlit UI and Control Flow ---
 
-# --- Execution Flow ---
-model = load_yolo_model()
+st.set_page_config(
+    page_title="DrainSight AI Detector",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-if uploaded_file is not None:
-    # Display the original image
-    with col1:
-        st.subheader("Original Image")
-        st.image(uploaded_file, caption="Image ready for analysis.", use_column_width=True)
+# --- HF STYLE HEADER AND INTRO (Refined) ---
+# Centered Header
+st.markdown("<h1 style='text-align: center; color: #1f77b4;'>Drainage Detector 🚧</h1>", unsafe_allow_html=True)
 
-    # Check if model is loaded and display the button
-    if model is not None:
-        if run_button_placeholder.button("🔍 Run Defect Detection"):
-            # Execute the processing function inside a spinner
-            with st.spinner("Analyzing image for defects..."):
+# Instruction Block with Border (HF Style)
+with st.container(border=True):
+    st.header("⚡️ Defect Detection Instructions")
+    st.markdown("""
+    Upload a high-resolution image of a drainage channel on the left to begin the analysis.
+    
+    This application uses a custom **YOLOv8** model to automatically detect and localize 
+    common defects such as **silt, plastic waste, and structural cracks**.
+    """)
+    st.caption("🚨 Note: Due to the shared server environment, analysis may take up to 10 seconds.")
+
+
+# Two columns for input and results
+col_input, col_results = st.columns([1, 1])
+
+# --- Input Column (Left) ---
+
+with col_input:
+    uploaded_file = st.file_uploader(
+        "Choose an image...", 
+        type=["jpg", "jpeg", "png", "webp"],
+        key="file_uploader"
+    )
+    
+    # Use a placeholder for the results column to manage state updates cleanly
+    results_placeholder = st.empty() 
+    
+    if uploaded_file is not None:
+        # Display the uploaded image
+        st.subheader("Uploaded Image")
+        st.image(uploaded_file, caption="Input Image", use_column_width=True)
+        
+        # --- Asynchronous Control Flow ---
+        
+        # Check if the analysis is already running
+        if 'running' not in st.session_state:
+            st.session_state.running = False
+
+        if not st.session_state.running:
+            # Button to trigger the analysis
+            if st.button("Run Defect Detection", type="primary", use_container_width=True):
+                # Set running state to true and rerun the script to show the spinner
+                st.session_state.running = True
+                st.session_state.uploaded_file = uploaded_file # Store file object
+                st.rerun()
+        else:
+            # Show a disabled button while running
+            st.button("Analysis in Progress...", disabled=True, use_container_width=True)
+
+
+# --- Results Column (Right) ---
+
+with col_results:
+    # This is the main logic handler that runs after the button click
+    
+    # Check if the app is currently running an analysis
+    if st.session_state.get('running', False):
+        # The model loading will only happen once thanks to @st.cache_resource
+        model = load_yolo_model()
+        
+        if model is not None:
+            # Use st.spinner to show a responsive loading indicator
+            with st.spinner("⚙️ Analyzing image for defects... This may take a moment on the free server."):
                 try:
-                    detections_found, save_path, detection_count = process_image(model, uploaded_file)
+                    # Run the synchronous inference process
+                    save_path, detection_count = process_image(model, st.session_state.uploaded_file)
                     
-                    if detections_found:
+                    # Clear the running state upon completion
+                    st.session_state.running = False
+                    
+                    if detection_count > 0:
                         # Success: Defects found
-                        results_placeholder.subheader("⚠️ Detection Results: Defects Found!")
-                        results_placeholder.warning(f"Identified **{detection_count}** potential defects/blockages.")
+                        st.subheader("⚠️ Detection Results: Defects Found!")
+                        st.warning(f"Identified **{detection_count}** potential defects/blockages.")
                         # Load the saved image for display
                         annotated_image = Image.open(save_path)
-                        results_placeholder.image(annotated_image, caption="Annotated Image with Bounding Boxes", use_column_width=True)
+                        st.image(annotated_image, caption="Annotated Image with Bounding Boxes", use_column_width=True)
                     else:
                         # Success: Channel Clear
-                        results_placeholder.subheader("✅ Inspection Complete: Channel Clear!")
-                        results_placeholder.success("No defects or blockages were identified in this channel segment.")
+                        st.subheader("✅ Inspection Complete: Channel Clear!")
+                        st.success("No defects or blockages were identified in this channel segment.")
                         
                 except Exception as e:
                     # Catch and display any final, unhandled error
-                    results_placeholder.subheader("🔴 FATAL APPLICATION ERROR")
-                    results_placeholder.error(f"The analysis failed due to a critical error: {e}")
+                    st.session_state.running = False # Clear state even on error
+                    st.subheader("🔴 FATAL APPLICATION ERROR")
+                    st.error(f"The analysis failed due to a critical error: {e}")
                     st.toast("Analysis failed! Check the console/logs for details.", icon='❌')
-    else:
-        # Model load failed, display error in the results placeholder
-        results_placeholder.error("Model failed to load. Check the initial error message above.")
-elif uploaded_file is None:
-    # Clear the second column if no file is uploaded
-    results_placeholder.empty()
+                    st.rerun() # Rerun to update the button state
+    
+    elif st.session_state.get('uploaded_file') is None and uploaded_file is None:
+        # Initial state: display instructions
+        st.info("Upload an image on the left to begin the analysis.")
+        
+    elif uploaded_file is None and st.session_state.get('uploaded_file') is not None:
+         # State when the user clears the file, ensure the UI resets
+         st.session_state.pop('uploaded_file')
+         st.session_state.running = False
+         st.rerun()
